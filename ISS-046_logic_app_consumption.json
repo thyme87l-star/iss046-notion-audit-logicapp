@@ -1,0 +1,246 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_description": "ISS-046 Notion Audit Log Connector — Logic App (Consumption) 簡素化版",
+    "_note": "Key Vault 不使用。Token は SecureString パラメータで渡す。ページ単位で即時送信（メモリ効率◎）。"
+  },
+  "parameters": {
+    "logicAppName": {
+      "type": "string",
+      "defaultValue": "ISS-046-notion-audit-la"
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "notionApiBaseUrl": {
+      "type": "string",
+      "metadata": { "description": "Notion API (or mock API) base URL" }
+    },
+    "notionToken": {
+      "type": "securestring",
+      "metadata": { "description": "Notion Internal Integration Token" }
+    },
+    "dceEndpoint": {
+      "type": "string",
+      "metadata": { "description": "Data Collection Endpoint URL" }
+    },
+    "dcrImmutableId": {
+      "type": "string",
+      "metadata": { "description": "Data Collection Rule immutable ID" }
+    },
+    "dcrStreamName": {
+      "type": "string",
+      "defaultValue": "Custom-NotionAuditLog_CL"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "MgmtID": "ISS-046",
+        "Project": "課題ベース対応",
+        "Purpose": "Notion Audit Log Sentinel Ingestion PoC (Consumption)",
+        "CreatedBy": "Orchestrator"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "state": "Disabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "notionApiBaseUrl": { "type": "String" },
+            "notionToken": { "type": "SecureString" },
+            "dceEndpoint": { "type": "String" },
+            "dcrImmutableId": { "type": "String" },
+            "dcrStreamName": { "type": "String" }
+          },
+          "triggers": {
+            "Recurrence": {
+              "type": "Recurrence",
+              "recurrence": {
+                "frequency": "Hour",
+                "interval": 1
+              }
+            }
+          },
+          "actions": {
+            "Initialize_HasMore": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  { "name": "HasMore", "type": "boolean", "value": true }
+                ]
+              },
+              "runAfter": {}
+            },
+            "Initialize_NextCursor": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  { "name": "NextCursor", "type": "string", "value": "" }
+                ]
+              },
+              "runAfter": { "Initialize_HasMore": ["Succeeded"] }
+            },
+            "Initialize_TotalSent": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  { "name": "TotalSent", "type": "integer", "value": 0 }
+                ]
+              },
+              "runAfter": { "Initialize_NextCursor": ["Succeeded"] }
+            },
+            "Pagination_Loop": {
+              "type": "Until",
+              "expression": "@equals(variables('HasMore'), false)",
+              "limit": {
+                "count": 500,
+                "timeout": "PT30M"
+              },
+              "actions": {
+                "Build_Query_Params": {
+                  "type": "Compose",
+                  "inputs": "@if(equals(variables('NextCursor'), ''), 'page_size=100', concat('page_size=100&start_cursor=', variables('NextCursor')))",
+                  "runAfter": {}
+                },
+                "Call_Notion_Audit_Log_API": {
+                  "type": "Http",
+                  "inputs": {
+                    "method": "GET",
+                    "uri": "@{parameters('notionApiBaseUrl')}/v1/audit_log?@{outputs('Build_Query_Params')}",
+                    "headers": {
+                      "Authorization": "Bearer @{parameters('notionToken')}",
+                      "Notion-Version": "2022-06-28",
+                      "Content-Type": "application/json"
+                    },
+                    "retryPolicy": {
+                      "type": "exponential",
+                      "count": 5,
+                      "interval": "PT5S",
+                      "maximumInterval": "PT60S",
+                      "minimumInterval": "PT5S"
+                    }
+                  },
+                  "runAfter": { "Build_Query_Params": ["Succeeded"] },
+                  "runtimeConfiguration": {
+                    "secureData": {
+                      "properties": ["inputs"]
+                    }
+                  }
+                },
+                "Transform_Page": {
+                  "type": "Select",
+                  "inputs": {
+                    "from": "@body('Call_Notion_Audit_Log_API')?['results']",
+                    "select": {
+                      "TimeGenerated": "@item()?['timestamp']",
+                      "EventId": "@item()?['id']",
+                      "WorkspaceId_Notion": "@item()?['workspace_id']",
+                      "ActorType": "@item()?['actor']?['type']",
+                      "ActorId": "@item()?['actor']?['id']",
+                      "ActorName": "@coalesce(item()?['actor']?['person']?['name'], '')",
+                      "ActorEmail": "@coalesce(item()?['actor']?['person']?['email'], '')",
+                      "IpAddress": "@coalesce(item()?['ip_address'], '')",
+                      "Platform": "@coalesce(item()?['platform'], '')",
+                      "EventType": "@item()?['event']?['type']",
+                      "EventCategory": "@item()?['event']?['category']",
+                      "TargetType": "@coalesce(item()?['target']?['type'], '')",
+                      "TargetId": "@coalesce(item()?['target']?['id'], '')",
+                      "TargetName": "@coalesce(item()?['target']?['name'], '')",
+                      "RawEvent": "@string(item())"
+                    }
+                  },
+                  "runAfter": { "Call_Notion_Audit_Log_API": ["Succeeded"] }
+                },
+                "Send_Page_to_Ingestion_API": {
+                  "type": "Http",
+                  "inputs": {
+                    "method": "POST",
+                    "uri": "@{parameters('dceEndpoint')}/dataCollectionRules/@{parameters('dcrImmutableId')}/streams/@{parameters('dcrStreamName')}?api-version=2023-01-01",
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "body": "@body('Transform_Page')",
+                    "authentication": {
+                      "type": "ManagedServiceIdentity",
+                      "audience": "https://monitor.azure.com"
+                    },
+                    "retryPolicy": {
+                      "type": "exponential",
+                      "count": 3,
+                      "interval": "PT5S",
+                      "maximumInterval": "PT1M"
+                    }
+                  },
+                  "runAfter": { "Transform_Page": ["Succeeded"] }
+                },
+                "Increment_TotalSent": {
+                  "type": "IncrementVariable",
+                  "inputs": {
+                    "name": "TotalSent",
+                    "value": "@length(body('Call_Notion_Audit_Log_API')?['results'])"
+                  },
+                  "runAfter": { "Send_Page_to_Ingestion_API": ["Succeeded"] }
+                },
+                "Update_HasMore": {
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "HasMore",
+                    "value": "@body('Call_Notion_Audit_Log_API')?['has_more']"
+                  },
+                  "runAfter": { "Increment_TotalSent": ["Succeeded"] }
+                },
+                "Update_NextCursor": {
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "NextCursor",
+                    "value": "@coalesce(body('Call_Notion_Audit_Log_API')?['next_cursor'], '')"
+                  },
+                  "runAfter": { "Update_HasMore": ["Succeeded"] }
+                },
+                "Rate_Limit_Delay": {
+                  "type": "Wait",
+                  "inputs": {
+                    "interval": {
+                      "count": 1,
+                      "unit": "Second"
+                    }
+                  },
+                  "runAfter": { "Update_NextCursor": ["Succeeded"] }
+                }
+              },
+              "runAfter": { "Initialize_TotalSent": ["Succeeded"] }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "notionApiBaseUrl": { "value": "[parameters('notionApiBaseUrl')]" },
+          "notionToken": { "value": "[parameters('notionToken')]" },
+          "dceEndpoint": { "value": "[parameters('dceEndpoint')]" },
+          "dcrImmutableId": { "value": "[parameters('dcrImmutableId')]" },
+          "dcrStreamName": { "value": "[parameters('dcrStreamName')]" }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "logicAppPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('logicAppName')), '2019-05-01', 'full').identity.principalId]"
+    },
+    "logicAppResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('logicAppName'))]"
+    }
+  }
+}

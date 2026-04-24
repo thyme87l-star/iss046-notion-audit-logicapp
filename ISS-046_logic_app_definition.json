@@ -1,0 +1,294 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_description": "ISS-046 Notion Audit Log Connector — Logic Apps (Standard) definition",
+    "_managementId": "ISS-046",
+    "_note": "This ARM template defines the Logic App workflow. Deploy via ISS-046_deploy.bicep."
+  },
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "notionApiBaseUrl": {
+        "type": "string",
+        "defaultValue": "https://api.notion.com"
+      },
+      "notionApiVersion": {
+        "type": "string",
+        "defaultValue": "2022-06-28"
+      },
+      "keyVaultName": {
+        "type": "string"
+      },
+      "notionTokenSecretName": {
+        "type": "string",
+        "defaultValue": "NotionIntegrationToken"
+      },
+      "dceEndpoint": {
+        "type": "string"
+      },
+      "dcrImmutableId": {
+        "type": "string"
+      },
+      "dcrStreamName": {
+        "type": "string",
+        "defaultValue": "Custom-NotionAuditLog_CL"
+      },
+      "pollingIntervalMinutes": {
+        "type": "int",
+        "defaultValue": 5
+      }
+    },
+    "triggers": {
+      "Recurrence": {
+        "type": "Recurrence",
+        "recurrence": {
+          "frequency": "Minute",
+          "interval": "@parameters('pollingIntervalMinutes')"
+        }
+      }
+    },
+    "actions": {
+      "Initialize_HasMore": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "HasMore",
+              "type": "boolean",
+              "value": true
+            }
+          ]
+        },
+        "runAfter": {}
+      },
+      "Initialize_NextCursor": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "NextCursor",
+              "type": "string",
+              "value": ""
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_HasMore": ["Succeeded"]
+        }
+      },
+      "Initialize_AllEvents": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "AllEvents",
+              "type": "array",
+              "value": []
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_NextCursor": ["Succeeded"]
+        }
+      },
+      "Get_Notion_Token_from_Key_Vault": {
+        "type": "Http",
+        "inputs": {
+          "method": "GET",
+          "uri": "https://@{parameters('keyVaultName')}.vault.azure.net/secrets/@{parameters('notionTokenSecretName')}?api-version=7.4",
+          "authentication": {
+            "type": "ManagedServiceIdentity"
+          }
+        },
+        "runAfter": {
+          "Initialize_AllEvents": ["Succeeded"]
+        },
+        "runtimeConfiguration": {
+          "secureData": {
+            "properties": ["outputs"]
+          }
+        }
+      },
+      "Pagination_Loop": {
+        "type": "Until",
+        "expression": "@equals(variables('HasMore'), false)",
+        "limit": {
+          "count": 100,
+          "timeout": "PT10M"
+        },
+        "actions": {
+          "Build_Query_Params": {
+            "type": "Compose",
+            "inputs": "@if(equals(variables('NextCursor'), ''), concat('page_size=100'), concat('page_size=100&start_cursor=', variables('NextCursor')))",
+            "runAfter": {}
+          },
+          "Call_Notion_Audit_Log_API": {
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "@{parameters('notionApiBaseUrl')}/v1/audit_log?@{outputs('Build_Query_Params')}",
+              "headers": {
+                "Authorization": "Bearer @{body('Get_Notion_Token_from_Key_Vault')?['value']}",
+                "Notion-Version": "@{parameters('notionApiVersion')}",
+                "Content-Type": "application/json"
+              },
+              "retryPolicy": {
+                "type": "exponential",
+                "count": 3,
+                "interval": "PT2S",
+                "maximumInterval": "PT30S",
+                "minimumInterval": "PT1S"
+              }
+            },
+            "runAfter": {
+              "Build_Query_Params": ["Succeeded"]
+            },
+            "runtimeConfiguration": {
+              "secureData": {
+                "properties": ["inputs"]
+              }
+            }
+          },
+          "Check_Rate_Limit_429": {
+            "type": "If",
+            "expression": {
+              "and": [
+                {
+                  "equals": ["@outputs('Call_Notion_Audit_Log_API')['statusCode']", 429]
+                }
+              ]
+            },
+            "actions": {
+              "Wait_for_Retry_After": {
+                "type": "Wait",
+                "inputs": {
+                  "interval": {
+                    "count": "@coalesce(int(outputs('Call_Notion_Audit_Log_API')?['headers']?['Retry-After']), 2)",
+                    "unit": "Second"
+                  }
+                }
+              }
+            },
+            "else": {
+              "actions": {
+                "Append_Events": {
+                  "type": "AppendToArrayVariable",
+                  "inputs": {
+                    "name": "AllEvents",
+                    "value": "@body('Call_Notion_Audit_Log_API')?['results']"
+                  }
+                },
+                "Update_HasMore": {
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "HasMore",
+                    "value": "@body('Call_Notion_Audit_Log_API')?['has_more']"
+                  },
+                  "runAfter": {
+                    "Append_Events": ["Succeeded"]
+                  }
+                },
+                "Update_NextCursor": {
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "NextCursor",
+                    "value": "@coalesce(body('Call_Notion_Audit_Log_API')?['next_cursor'], '')"
+                  },
+                  "runAfter": {
+                    "Update_HasMore": ["Succeeded"]
+                  }
+                }
+              }
+            },
+            "runAfter": {
+              "Call_Notion_Audit_Log_API": ["Succeeded", "Failed"]
+            }
+          },
+          "Rate_Limit_Delay": {
+            "type": "Wait",
+            "inputs": {
+              "interval": {
+                "count": 350,
+                "unit": "Millisecond"
+              }
+            },
+            "runAfter": {
+              "Check_Rate_Limit_429": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Get_Notion_Token_from_Key_Vault": ["Succeeded"]
+        }
+      },
+      "Transform_Events_Select": {
+        "type": "Select",
+        "inputs": {
+          "from": "@variables('AllEvents')",
+          "select": {
+            "TimeGenerated": "@item()?['timestamp']",
+            "EventId": "@item()?['id']",
+            "WorkspaceId_Notion": "@item()?['workspace_id']",
+            "ActorType": "@item()?['actor']?['type']",
+            "ActorId": "@item()?['actor']?['id']",
+            "ActorName": "@item()?['actor']?['person']?['name']",
+            "ActorEmail": "@item()?['actor']?['person']?['email']",
+            "IpAddress": "@item()?['ip_address']",
+            "Platform": "@item()?['platform']",
+            "EventType": "@item()?['event']?['type']",
+            "EventCategory": "@item()?['event']?['category']",
+            "TargetType": "@item()?['target']?['type']",
+            "TargetId": "@item()?['target']?['id']",
+            "TargetName": "@item()?['target']?['name']",
+            "RawEvent": "@string(item())"
+          }
+        },
+        "runAfter": {
+          "Pagination_Loop": ["Succeeded"]
+        }
+      },
+      "Check_Events_Not_Empty": {
+        "type": "If",
+        "expression": {
+          "and": [
+            {
+              "greater": ["@length(body('Transform_Events_Select'))", 0]
+            }
+          ]
+        },
+        "actions": {
+          "Send_to_Logs_Ingestion_API": {
+            "type": "Http",
+            "inputs": {
+              "method": "POST",
+              "uri": "@{parameters('dceEndpoint')}/dataCollectionRules/@{parameters('dcrImmutableId')}/streams/@{parameters('dcrStreamName')}?api-version=2023-01-01",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": "@body('Transform_Events_Select')",
+              "authentication": {
+                "type": "ManagedServiceIdentity",
+                "audience": "https://monitor.azure.com"
+              },
+              "retryPolicy": {
+                "type": "exponential",
+                "count": 3,
+                "interval": "PT5S",
+                "maximumInterval": "PT1M"
+              }
+            }
+          }
+        },
+        "else": {
+          "actions": {}
+        },
+        "runAfter": {
+          "Transform_Events_Select": ["Succeeded"]
+        }
+      }
+    },
+    "outputs": {}
+  }
+}
