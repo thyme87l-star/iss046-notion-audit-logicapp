@@ -8,7 +8,7 @@
   "parameters": {
     "logicAppName": {
       "type": "string",
-      "defaultValue": "ISS-046-notion-audit-la"
+      "defaultValue": "notion-audit-la"
     },
     "location": {
       "type": "string",

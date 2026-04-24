@@ -15,12 +15,12 @@
 
   "notion": {
     "integrationToken": "",
-    "_comment": "Notion Enterprise の Internal Integration Token (secret_xxx...)"
+    "apiBaseUrl": "https://api.notion.com",
+    "_comment": "integrationToken: Notion Enterprise の Internal Integration Token (secret_xxx...), apiBaseUrl: Notion API ベース URL（テスト時は Mock API の URL を指定可）"
   },
 
   "options": {
     "baseName": "notion-audit-la",
-    "pollingIntervalMinutes": 5,
-    "_comment": "baseName: リソース名プレフィックス, pollingIntervalMinutes: Notion API ポーリング間隔（分）"
+    "_comment": "baseName: リソース名プレフィクス（Logic App 名としても使用）"
   }
 }

@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-    ISS-046 Notion Audit Log → Sentinel: Logic App 自動展開スクリプト
+    ISS-046 Notion Audit Log → Sentinel: Logic App (Consumption) 自動展開スクリプト
 
 .DESCRIPTION
     params.json に記入されたパラメータを読み取り、以下を自動実行します:
       Step 0: Azure CLI ログイン
       Step 1: リソースグループの作成
-      Step 2: Bicep でインフラを一括デプロイ
-      Step 3: Notion Integration Token を Key Vault に格納
-      Step 4: Logic App ワークフロー定義のデプロイ (Consumption)
+      Step 2: Bicep でインフラをデプロイ (DCE + DCR)
+      Step 3: Logic App (Consumption) のデプロイ
+      Step 4: RBAC 割り当て (Monitoring Metrics Publisher)
       Step 5: Logic App の有効化
       Step 6: 動作確認
 
@@ -72,7 +72,7 @@ function Confirm-Continue {
 # パラメータ読み込みとバリデーション
 # ============================================================
 Write-Host ""
-Write-Host "ISS-046 Notion Audit Log -> Sentinel: Logic App 展開スクリプト" -ForegroundColor White -BackgroundColor DarkBlue
+Write-Host "ISS-046 Notion Audit Log -> Sentinel: Logic App (Consumption) 展開スクリプト" -ForegroundColor White -BackgroundColor DarkBlue
 Write-Host ""
 
 if (-not (Test-Path $ParamsFile)) {
@@ -112,7 +112,11 @@ $location           = $config.azure.location
 $workspaceResId     = $config.sentinel.workspaceResourceId
 $notionToken        = $config.notion.integrationToken
 $baseName           = $config.options.baseName
-$pollingInterval    = $config.options.pollingIntervalMinutes
+$logicAppName       = $baseName
+$notionApiBaseUrl   = if ($config.notion.PSObject.Properties['apiBaseUrl'] -and
+                          -not [string]::IsNullOrWhiteSpace($config.notion.apiBaseUrl)) {
+                          $config.notion.apiBaseUrl
+                      } else { 'https://api.notion.com' }
 
 Write-Host ""
 Write-Host "--- 展開パラメータ確認 ---" -ForegroundColor White
@@ -121,8 +125,9 @@ Write-Host "  リソースグループ     : $rgName"
 Write-Host "  リージョン           : $location"
 Write-Host "  Sentinel WS          : $workspaceResId"
 Write-Host "  Notion Token         : $('*' * 8)...(非表示)"
+Write-Host "  Notion API Base URL  : $notionApiBaseUrl"
 Write-Host "  ベース名             : $baseName"
-Write-Host "  ポーリング間隔       : ${pollingInterval} 分"
+Write-Host "  Logic App 名         : $logicAppName"
 Write-Host ""
 Confirm-Continue "上記の内容で展開を開始しますか？"
 
@@ -184,9 +189,9 @@ $rgState = az group show --name $rgName --query properties.provisioningState -o 
 Write-Check "リソースグループ: $rgName ($location) — $rgState"
 
 # ============================================================
-# Step 2: Bicep でインフラを一括デプロイ
+# Step 2: Bicep でインフラをデプロイ (DCE + DCR)
 # ============================================================
-Write-Step "2" "Bicep でインフラを一括デプロイ"
+Write-Step "2" "Bicep でインフラをデプロイ (DCE + DCR)"
 
 $bicepFile = "$PSScriptRoot\ISS-046_deploy.bicep"
 if (-not (Test-Path $bicepFile)) {
@@ -203,7 +208,6 @@ $deployOutput = az deployment group create `
     --parameters `
         sentinelWorkspaceResourceId=$workspaceResId `
         baseName=$baseName `
-        pollingIntervalMinutes=$pollingInterval `
     --query properties.outputs -o json 2>&1
 
 if ($LASTEXITCODE -ne 0) {
@@ -213,45 +217,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $outputs = $deployOutput | ConvertFrom-Json
-$logicAppName    = $outputs.logicAppName.value
-$keyVaultName    = $outputs.keyVaultName.value
 $dceEndpoint     = $outputs.dceEndpoint.value
 $dcrImmutableId  = $outputs.dcrImmutableId.value
+$dcrResourceId   = $outputs.dcrResourceId.value
 
-Write-Check "デプロイ完了"
-Write-Host "  Logic App   : $logicAppName"
-Write-Host "  Key Vault   : $keyVaultName"
-Write-Host "  DCE Endpoint: $dceEndpoint"
-Write-Host "  DCR ID      : $dcrImmutableId"
-
-# ============================================================
-# Step 3: Notion Integration Token を Key Vault に格納
-# ============================================================
-Write-Step "3" "Notion Integration Token を Key Vault に格納"
-
-Write-Host "  Key Vault '$keyVaultName' に Token を格納します..."
-az keyvault secret set `
-    --vault-name $keyVaultName `
-    --name NotionIntegrationToken `
-    --value $notionToken `
-    -o none 2>&1
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Fail "Key Vault への Token 格納に失敗しました"
-    Write-Host "  Key Vault のアクセスポリシーまたは RBAC を確認してください。"
-    exit 1
-}
-
-$secretEnabled = az keyvault secret show `
-    --vault-name $keyVaultName `
-    --name NotionIntegrationToken `
-    --query attributes.enabled -o tsv
-Write-Check "Token 格納完了 (enabled: $secretEnabled)"
+Write-Check "インフラデプロイ完了"
+Write-Host "  DCE Endpoint   : $dceEndpoint"
+Write-Host "  DCR Immutable ID: $dcrImmutableId"
 
 # ============================================================
-# Step 4: Logic App ワークフロー定義のデプロイ (Consumption)
+# Step 3: Logic App (Consumption) のデプロイ
 # ============================================================
-Write-Step "4" "Logic App ワークフロー定義のデプロイ"
+Write-Step "3" "Logic App (Consumption) のデプロイ"
 
 $consumptionTemplate = "$PSScriptRoot\ISS-046_logic_app_consumption.json"
 if (-not (Test-Path $consumptionTemplate)) {
@@ -259,22 +236,53 @@ if (-not (Test-Path $consumptionTemplate)) {
     exit 1
 }
 
-Write-Host "  Consumption 版ワークフロー定義をデプロイ中..."
-az deployment group create `
+Write-Host "  Consumption Logic App をデプロイ中..."
+$laDeployOutput = az deployment group create `
     --resource-group $rgName `
     --template-file $consumptionTemplate `
     --parameters `
-        notionApiBaseUrl="https://api.notion.com" `
+        logicAppName=$logicAppName `
+        notionApiBaseUrl=$notionApiBaseUrl `
         notionToken=$notionToken `
         dceEndpoint=$dceEndpoint `
         dcrImmutableId=$dcrImmutableId `
+    --query properties.outputs -o json 2>&1
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Fail "Logic App のデプロイに失敗しました"
+    Write-Host $laDeployOutput
+    exit 1
+}
+
+$laOutputs = $laDeployOutput | ConvertFrom-Json
+$laPrincipalId = $laOutputs.logicAppPrincipalId.value
+
+Write-Check "Logic App デプロイ完了"
+Write-Host "  Logic App 名    : $logicAppName (状態: Disabled)"
+Write-Host "  MSI Principal ID: $laPrincipalId"
+
+# ============================================================
+# Step 4: RBAC 割り当て (Monitoring Metrics Publisher → DCR)
+# ============================================================
+Write-Step "4" "RBAC 割り当て"
+
+Write-Host "  Logic App MSI に Monitoring Metrics Publisher ロールを割り当て中..."
+
+# Monitoring Metrics Publisher role ID: 3913510d-42f4-4e42-8a64-420c390055eb
+az role assignment create `
+    --assignee-object-id $laPrincipalId `
+    --assignee-principal-type ServicePrincipal `
+    --role "3913510d-42f4-4e42-8a64-420c390055eb" `
+    --scope $dcrResourceId `
     -o none 2>&1
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Fail "ワークフロー定義のデプロイに失敗しました"
+    Write-Fail "RBAC 割り当てに失敗しました"
     exit 1
 }
-Write-Check "ワークフロー定義のデプロイ完了"
+
+Write-Check "Monitoring Metrics Publisher ロールを DCR に割り当て完了"
+Write-Host "  RBAC の反映に最大 5 分かかる場合があります" -ForegroundColor Gray
 
 # ============================================================
 # Step 5: Logic App の有効化
@@ -301,7 +309,8 @@ Write-Check "Logic App 状態: $laState"
 Write-Step "6" "動作確認"
 
 Write-Host "  Logic App の初回実行を待機中（最大 5 分）..."
-Write-Host "  Recurrence トリガーが起動するのを待っています..." -ForegroundColor Gray
+Write-Host "  Recurrence トリガー（1 時間間隔）が起動するのを待っています..." -ForegroundColor Gray
+Write-Host "  ※ 即時テストする場合は Azure Portal から手動トリガーしてください" -ForegroundColor Gray
 
 $maxWait = 300  # 5 minutes
 $waited = 0
@@ -328,7 +337,8 @@ while ($waited -lt $maxWait) {
 
 if ($waited -ge $maxWait) {
     Write-Warn "タイムアウト: Logic App の実行がまだ開始されていません。"
-    Write-Host "  Azure Portal → Logic App → 実行の履歴 で状況を確認してください。"
+    Write-Host "  Recurrence トリガーは 1 時間間隔です。" -ForegroundColor Gray
+    Write-Host "  Azure Portal → Logic App → トリガーの実行 で手動実行できます。" -ForegroundColor Gray
 }
 
 # ============================================================
@@ -341,9 +351,13 @@ Write-Host "=" * 60 -ForegroundColor Green
 Write-Host ""
 Write-Host "  リソースグループ  : $rgName"
 Write-Host "  Logic App         : $logicAppName (状態: $laState)"
-Write-Host "  Key Vault         : $keyVaultName"
 Write-Host "  DCE Endpoint      : $dceEndpoint"
 Write-Host "  DCR Immutable ID  : $dcrImmutableId"
+Write-Host ""
+Write-Host "  デプロイされたリソース:" -ForegroundColor White
+Write-Host "    - Data Collection Endpoint (DCE)"
+Write-Host "    - Data Collection Rule (DCR)"
+Write-Host "    - Logic App (Consumption) — Notion API → DCE 連携"
 Write-Host ""
 Write-Host "  データ確認 (KQL):" -ForegroundColor White
 Write-Host "    Defender ポータル → Advanced Hunting で以下を実行:"
