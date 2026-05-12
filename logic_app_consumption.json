@@ -1,8 +1,8 @@
-{
+﻿{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "_description": "ISS-046 Notion Audit Log Connector — Logic App (Consumption) 簡素化版",
+    "_description": "Notion Audit Log Connector — Logic App (Consumption) 簡素化版",
     "_note": "Key Vault 不使用。Token は SecureString パラメータで渡す。ページ単位で即時送信（メモリ効率◎）。"
   },
   "parameters": {
@@ -42,7 +42,7 @@
       "name": "[parameters('logicAppName')]",
       "location": "[parameters('location')]",
       "tags": {
-        "MgmtID": "ISS-046",
+        "MgmtID": "notion-audit",
         "Project": "課題ベース対応",
         "Purpose": "Notion Audit Log Sentinel Ingestion PoC (Consumption)",
         "CreatedBy": "Orchestrator"

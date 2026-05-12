@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    ISS-046 Notion Audit Log → Sentinel: Logic App (Consumption) 自動展開スクリプト
+    Notion Audit Log → Sentinel: Logic App (Consumption) 自動展開スクリプト
 
 .DESCRIPTION
     params.json に記入されたパラメータを読み取り、以下を自動実行します:
@@ -72,7 +72,7 @@ function Confirm-Continue {
 # パラメータ読み込みとバリデーション
 # ============================================================
 Write-Host ""
-Write-Host "ISS-046 Notion Audit Log -> Sentinel: Logic App (Consumption) 展開スクリプト" -ForegroundColor White -BackgroundColor DarkBlue
+Write-Host "Notion Audit Log -> Sentinel: Logic App (Consumption) 展開スクリプト" -ForegroundColor White -BackgroundColor DarkBlue
 Write-Host ""
 
 if (-not (Test-Path $ParamsFile)) {
@@ -193,7 +193,7 @@ Write-Check "リソースグループ: $rgName ($location) — $rgState"
 # ============================================================
 Write-Step "2" "Bicep でインフラをデプロイ (DCE + DCR)"
 
-$bicepFile = "$PSScriptRoot\ISS-046_deploy.bicep"
+$bicepFile = "$PSScriptRoot\deploy.bicep"
 if (-not (Test-Path $bicepFile)) {
     Write-Fail "Bicep ファイルが見つかりません: $bicepFile"
     exit 1
@@ -230,7 +230,7 @@ Write-Host "  DCR Immutable ID: $dcrImmutableId"
 # ============================================================
 Write-Step "3" "Logic App (Consumption) のデプロイ"
 
-$consumptionTemplate = "$PSScriptRoot\ISS-046_logic_app_consumption.json"
+$consumptionTemplate = "$PSScriptRoot\logic_app_consumption.json"
 if (-not (Test-Path $consumptionTemplate)) {
     Write-Fail "Consumption テンプレートが見つかりません: $consumptionTemplate"
     exit 1

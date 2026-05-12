@@ -1,10 +1,10 @@
-{
-  "$schema": "ISS-046 Logic App Deployment Parameters",
+﻿{
+  "$schema": "Notion Audit Logic App Deployment Parameters",
   "$description": "このファイルにお客様環境の情報を記入し、deploy.ps1 を実行してください。",
 
   "azure": {
     "subscriptionId": "",
-    "resourceGroupName": "ISS-046-PoC-RG",
+    "resourceGroupName": "Notion-Audit-RG",
     "location": "japaneast"
   },
 

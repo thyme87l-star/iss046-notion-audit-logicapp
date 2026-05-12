@@ -1,4 +1,4 @@
-# Notion Audit Log → Microsoft Sentinel (Logic App)
+﻿# Notion Audit Log → Microsoft Sentinel (Logic App)
 
 Notion の [Audit Log API](https://developers.notion.com/reference/get-audit-log) から監査ログを自動取得し、Microsoft Sentinel の `NotionAuditLog_CL` カスタムテーブルへインジェストする Logic App (Consumption) ソリューションです。
 
@@ -50,8 +50,8 @@ flowchart LR
 ```
 ├── params.json                              # パラメータテンプレート（最初にこれを編集）
 ├── deploy.ps1                               # ワンクリック展開スクリプト
-├── ISS-046_deploy.bicep                     # DCE + DCR をデプロイ
-└── ISS-046_logic_app_consumption.json       # Logic App (Consumption) ARM テンプレート
+├── deploy.bicep                     # DCE + DCR をデプロイ
+└── logic_app_consumption.json       # Logic App (Consumption) ARM テンプレート
 ```
 
 ## デプロイされるリソース
@@ -147,7 +147,7 @@ az group create --name Notion-Audit-RG --location japaneast
 
 az deployment group create `
   --resource-group Notion-Audit-RG `
-  --template-file ISS-046_deploy.bicep `
+  --template-file deploy.bicep `
   --parameters sentinelWorkspaceResourceId="<WORKSPACE_RESOURCE_ID>"
 ```
 
@@ -158,7 +158,7 @@ Bicep デプロイの出力値 (`dceEndpoint`, `dcrImmutableId`) を使用しま
 ```powershell
 az deployment group create `
   --resource-group Notion-Audit-RG `
-  --template-file ISS-046_logic_app_consumption.json `
+  --template-file logic_app_consumption.json `
   --parameters `
     logicAppName="notion-audit-la" `
     notionApiBaseUrl="https://api.notion.com" `

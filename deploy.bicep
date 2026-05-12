@@ -1,12 +1,12 @@
-// ISS-046 Notion Audit Log Connector — Infrastructure Deployment (Consumption)
+﻿// Notion Audit Log Connector — Infrastructure Deployment (Consumption)
 // ============================================================
 // Deploys: DCE + DCR + Custom Table
-// Logic App (Consumption) は ISS-046_logic_app_consumption.json で別途デプロイ
+// Logic App (Consumption) は logic_app_consumption.json で別途デプロイ
 //
 // Usage:
 //   az deployment group create \
 //     --resource-group <RG> \
-//     --template-file ISS-046_deploy.bicep \
+//     --template-file deploy.bicep \
 //     --parameters sentinelWorkspaceResourceId=<workspace-resource-id>
 
 @description('Azure region for all resources')
@@ -18,8 +18,8 @@ param baseName string = 'notion-audit-la'
 @description('Resource ID of the existing Log Analytics workspace (Sentinel)')
 param sentinelWorkspaceResourceId string
 
-@description('Management ID tag (ISS-046)')
-param mgmtId string = 'ISS-046'
+@description('Management ID tag')
+param mgmtId string = 'notion-audit'
 
 var tags = {
   MgmtID: mgmtId
